@@ -25,12 +25,18 @@ package pascal.taie.analysis.dataflow.analysis;
 import pascal.taie.analysis.dataflow.fact.SetFact;
 import pascal.taie.analysis.graph.cfg.CFG;
 import pascal.taie.config.AnalysisConfig;
+import pascal.taie.ir.exp.LValue;
+import pascal.taie.ir.exp.RValue;
 import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.Stmt;
+
+import java.util.List;
+import java.util.Optional;
 
 /**
  * Implementation of classic live variable analysis.
  */
+//fact是一个setfact<var>
 public class LiveVariableAnalysis extends
         AbstractDataflowAnalysis<Stmt, SetFact<Var>> {
 
@@ -48,23 +54,46 @@ public class LiveVariableAnalysis extends
     @Override
     public SetFact<Var> newBoundaryFact(CFG<Stmt> cfg) {
         // TODO - finish me
-        return null;
+        // IN[EXIT] = null;
+        SetFact<Var> fact = new SetFact<>();
+        return fact;
     }
 
     @Override
     public SetFact<Var> newInitialFact() {
         // TODO - finish me
-        return null;
+        // IN[B] = null;
+        SetFact<Var> fact = new SetFact<>();
+        return fact;
     }
 
     @Override
     public void meetInto(SetFact<Var> fact, SetFact<Var> target) {
         // TODO - finish me
+        fact.union(target);
     }
 
     @Override
     public boolean transferNode(Stmt stmt, SetFact<Var> in, SetFact<Var> out) {
         // TODO - finish me
-        return false;
+        SetFact<Var> tmp = new SetFact<>();
+        tmp.union(out);
+        if (stmt.getDef().isPresent()) {
+            // 确保 Optional 有值
+            if (stmt.getDef().get() instanceof Var) {
+                tmp.remove((Var) stmt.getDef().get());
+            }
+        }
+
+        for(RValue v : stmt.getUses()) {
+            if (v instanceof Var)  tmp.add((Var)v);
+        }
+
+        //新一轮产生的In和上一轮的in相同
+        if(tmp.equals(in)) return false;
+        else {
+            in.set(tmp);
+            return true;
+        }
     }
 }

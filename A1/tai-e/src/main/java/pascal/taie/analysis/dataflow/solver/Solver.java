@@ -25,6 +25,7 @@ package pascal.taie.analysis.dataflow.solver;
 import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
+import pascal.taie.ir.stmt.Stmt;
 
 /**
  * Base class for data-flow analysis solver, which provides common
@@ -82,6 +83,17 @@ public abstract class Solver<Node, Fact> {
 
     protected void initializeBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
         // TODO - finish me
+        Node exit = cfg.getExit();
+        result.setInFact(exit, analysis.newBoundaryFact(cfg));
+
+        for (Node node : cfg) {
+            //equals是数值比较，所以应该判定是不是exit，而不是比较数值！
+            if(!cfg.isExit(node)) {
+                result.setInFact(node, analysis.newInitialFact());
+                //没有为outb新生成集合，需要在这里作初始化
+                result.setOutFact(node, analysis.newInitialFact());
+            }
+        }
     }
 
     /**
