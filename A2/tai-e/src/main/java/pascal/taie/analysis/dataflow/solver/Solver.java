@@ -23,6 +23,7 @@
 package pascal.taie.analysis.dataflow.solver;
 
 import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
+import pascal.taie.analysis.dataflow.analysis.constprop.CPFact;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
 
@@ -77,6 +78,13 @@ public abstract class Solver<Node, Fact> {
     }
 
     protected void initializeForward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
+        //这里把所有in out的引用设置成一个了。。。。
+        for (Node node : cfg.getNodes()) {
+            Fact in = analysis.newBoundaryFact(cfg);
+            Fact out = analysis.newBoundaryFact(cfg);
+            result.setInFact(node, in);
+            result.setOutFact(node, out);
+        }
         // TODO - finish me
     }
 

@@ -49,6 +49,7 @@ public abstract class Solver<Node, Fact> {
             DataflowAnalysis<Node, Fact> analysis) {
         return new IterativeSolver<>(analysis);
     }
+    //钻石修饰符，同 return new IterativeSolver<Node, Fact>(analysis);
 
     /**
      * Starts this solver on the given CFG.

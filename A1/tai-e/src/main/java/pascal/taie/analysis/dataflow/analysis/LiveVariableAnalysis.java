@@ -90,7 +90,9 @@ public class LiveVariableAnalysis extends
         }
 
         //新一轮产生的In和上一轮的in相同
+        //this judge really save time for the structure setfact realize function set by clear first and then union
         if(tmp.equals(in)) return false;
+
         else {
             in.set(tmp);
             return true;

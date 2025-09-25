@@ -38,10 +38,17 @@ public interface Exp {
 
     /**
      * @return a list of expressions which are used by (contained in) this Exp.
+     * default implementation returns an empty list. (Java 8) The empty list can not be changed. (Java 9)
      */
     default List<RValue> getUses() {
         return List.of();
     }
 
+    /**
+     * ExpVisitor is a visitor interface for visiting expressions.
+     * it implements a correspond  visit method for each Exp subclass.
+     * accept is a method that accepts a visitor and calls the corresponding visit method. which called double dispatch.
+     * T is the return type of the visit method.
+     */
     <T> T accept(ExpVisitor<T> visitor);
 }
