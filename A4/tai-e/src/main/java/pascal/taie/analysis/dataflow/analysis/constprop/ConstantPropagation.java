@@ -99,21 +99,21 @@ public class ConstantPropagation extends
     @Override
     public boolean transferNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
+        CPFact newOut = in.copy();
         if (stmt instanceof DefinitionStmt<?,?> definitionStmt) {
             LValue left = definitionStmt.getLValue();
             RValue right = definitionStmt.getRValue();
-
-            CPFact newOut = in.copy();
 
             if (left instanceof Var var) {
                 if (canHoldInt(var)) {
                     Value value = evaluate(right, in);
                     newOut.update(var, value);
                 }
-                return out.copyFrom(newOut);
+
             }
         }
-        return false;
+
+        return out.copyFrom(newOut);
     }
 
     /**

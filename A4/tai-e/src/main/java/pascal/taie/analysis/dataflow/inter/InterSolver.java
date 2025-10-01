@@ -93,9 +93,7 @@ class InterSolver<Method, Node, Fact> {
                 if(edgeOut != null) analysis.meetInto(edgeOut, in);
             }
             if(analysis.transferNode(node, in, oldOut)) {
-                for (Node succ : icfg.getSuccsOf(node)) {
-                    workList.add(succ);
-                }
+                workList.addAll(icfg.getSuccsOf(node));
             };
 
         }

@@ -83,19 +83,6 @@ public class InterConstantPropagation extends
     protected boolean transferCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
         CPFact newOut = in.copy();
-//        if(stmt instanceof Invoke invoke) {
-//            InvokeExp exp = invoke.getInvokeExp();
-//            Var var = invoke.getResult();
-//
-//            List<Var> actual_params = exp.getArgs();
-//
-//            Set<ICFGEdge<Stmt>> outEdges = icfg.getOutEdgesOf(invoke);
-//
-//            for(ICFGEdge<Stmt> outEdge : outEdges) {
-//                CPFact edgeOut = transferEdge(outEdge, in);
-//                Stmt target = outEdge.getTarget();
-//            }
-//        }
         return out.copyFrom(newOut);
     }
 
@@ -114,7 +101,6 @@ public class InterConstantPropagation extends
     @Override
     protected CPFact transferCallToReturnEdge(CallToReturnEdge<Stmt> edge, CPFact out) {
         Stmt callSite = edge.getSource();
-        Stmt returnSite = edge.getTarget();
 
         CPFact callToReturnOut = out.copy();
         if (callSite instanceof Invoke invoke) {
@@ -135,17 +121,16 @@ public class InterConstantPropagation extends
         Invoke callSite = (Invoke) edge.getSource();
         List<Var> actual_params = callSite.getInvokeExp().getArgs();
 
-        CPFact calledge_out = callSiteOut.copy();
-        for(Var actual_param : actual_params) {
-            calledge_out.update(actual_param, Value.getUndef());
-        }
+        CPFact callEdgeOut = new CPFact();
         for(int i = 0; i < actual_params.size(); i++) {
-            calledge_out.update(formal_params.get(i), callSiteOut.get(actual_params.get(i)));
+            callEdgeOut.update(formal_params.get(i), callSiteOut.get(actual_params.get(i)));
         }
+
         // TODO - finish me
-        return calledge_out;
+        return callEdgeOut;
     }
 
+    //多个return的情况要怎么处理 简单的meetValue吗 可实在是获取不到returnStmt
     @Override
     protected CPFact transferReturnEdge(ReturnEdge<Stmt> edge, CPFact returnOut) {
         // TODO - finish me
@@ -154,18 +139,16 @@ public class InterConstantPropagation extends
             returnEdgeOut.update(var, Value.getUndef());
         }
         Stmt callSite = edge.getCallSite();
-        Stmt ret = edge.getSource();
-        List<RValue> retUses = ret.getUses();
         if (callSite instanceof Invoke invoke) {
             Var result = invoke.getResult();
-            if (result == null || ConstantPropagation.canHoldInt(result)) {return null;}
+            if (result == null || !ConstantPropagation.canHoldInt(result)) {return null;}
             else {
+                Value returnVal = Value.getUndef();
                 Collection<Var> returnVars = edge.getReturnVars();
                 for (Var returnVar : returnVars) {
-                    if (retUses.contains(returnVar) && returnVar.getTempConstValue() instanceof IntLiteral intLiteral) {
-                        returnEdgeOut.update(returnVar, Value.makeConstant(intLiteral.getValue()));
-                    }
+                    returnVal = cp.meetValue(returnVal,returnOut.get(returnVar));
                 }
+                returnEdgeOut.update(result, returnVal);
             }
         }
 

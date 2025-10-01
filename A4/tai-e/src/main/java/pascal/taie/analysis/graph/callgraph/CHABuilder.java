@@ -34,7 +34,6 @@ import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.classes.Subsignature;
 import polyglot.ast.Call;
 
-import java.lang.invoke.CallSite;
 import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.Queue;
