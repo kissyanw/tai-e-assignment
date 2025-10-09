@@ -62,6 +62,8 @@ import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
 
+import java.util.List;
+
 class Solver {
 
     private static final Logger logger = LogManager.getLogger(Solver.class);
@@ -112,6 +114,8 @@ class Solver {
      */
     private void addReachable(CSMethod csMethod) {
         // TODO - finish me
+        StmtProcessor processor = new StmtProcessor(csMethod);
+        csMethod.getMethod().getIR().getStmts().forEach(stmt -> stmt.accept(processor));
     }
 
     /**
@@ -128,6 +132,81 @@ class Solver {
             this.context = csMethod.getContext();
         }
 
+        @Override
+        public Void visit(New stmt) {
+            // TODO - finish me
+            Obj obj = heapModel.getObj(stmt);
+            CSObj csObj = csManager.getCSObj(context, obj);
+            Var var = stmt.getLValue();
+            CSVar csVar = csManager.getCSVar(context,var);
+
+            PointsToSet pointsToSet = PointsToSetFactory.make(csObj);
+            workList.addEntry(csVar, pointsToSet);
+            return null;
+        }
+
+        @Override
+        public Void visit(Copy stmt) {
+            CSVar lhs = csManager.getCSVar(context, stmt.getLValue());
+            CSVar rhs = csManager.getCSVar(context, stmt.getRValue());
+            addPFGEdge(lhs, rhs);
+            return null;
+        }
+
+        @Override
+        public Void visit(StoreField stmt) {
+            if (stmt.isStatic()) {
+                JField field = stmt.getFieldRef().resolve();
+                StaticField staticField = csManager.getStaticField(field);
+
+                CSVar src = csManager.getCSVar(context, stmt.getRValue());
+                addPFGEdge(src, staticField);
+            }
+            return null;
+        }
+
+        @Override
+        public Void visit(LoadField stmt) {
+            if (stmt.isStatic()) {
+                JField field = stmt.getFieldRef().resolve();
+                StaticField staticField = csManager.getStaticField(field);
+
+                CSVar dest = csManager.getCSVar(context, stmt.getLValue());
+                addPFGEdge(dest, staticField);
+            }
+            return null;
+        }
+
+        @Override
+        public Void visit(Invoke stmt) {
+            if (stmt.isStatic()) {
+                JMethod jMethod = resolveCallee(null, stmt);
+                CSCallSite csCallSite = csManager.getCSCallSite(context, stmt);
+                Context calleeContext = contextSelector.selectContext(csCallSite, jMethod);
+
+                List<Var> actual_params = stmt.getInvokeExp().getArgs();
+                List<Var> formal_params = jMethod.getIR().getParams();
+
+                for (int i = 0; i < formal_params.size(); i++) {
+                    CSVar actual = csManager.getCSVar(context, actual_params.get(i));
+                    CSVar formal = csManager.getCSVar(calleeContext, formal_params.get(i));
+                    addPFGEdge(actual, formal);
+                }
+
+                if (stmt.getResult() != null) {
+                    CSVar result = csManager.getCSVar(context, stmt.getResult());
+                    List<Var> retVars = jMethod.getIR().getReturnVars();
+                    for (Var retVar : retVars) {
+                       CSVar ret = csManager.getCSVar(calleeContext, retVar);
+                       addPFGEdge(ret, result);
+                    }
+                }
+
+            }
+
+            return null;
+        }
+
         // TODO - if you choose to implement addReachable()
         //  via visitor pattern, then finish me
     }
@@ -136,6 +215,12 @@ class Solver {
      * Adds an edge "source -> target" to the PFG.
      */
     private void addPFGEdge(Pointer source, Pointer target) {
+        if (pointerFlowGraph.addEdge(source, target)) {
+            PointsToSet pointsToSet = source.getPointsToSet();
+            if (!pointsToSet.isEmpty()) {
+                workList.addEntry(target, pointsToSet);
+            }
+        }
         // TODO - finish me
     }
 
