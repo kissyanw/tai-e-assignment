@@ -30,6 +30,9 @@ import pascal.taie.analysis.pta.core.cs.element.CSObj;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.language.classes.JMethod;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Implementation of 2-object sensitivity.
  */
@@ -43,18 +46,33 @@ public class _2ObjSelector implements ContextSelector {
     @Override
     public Context selectContext(CSCallSite callSite, JMethod callee) {
         // TODO - finish me
-        return null;
+        Context callerContext = callSite.getContext();
+        int size = callerContext.getLength();
+        if (size < 2) return callerContext;
+        return ListContext.make(callerContext.getElementAt(size - 2), callerContext.getElementAt(size - 1));
     }
 
     @Override
     public Context selectContext(CSCallSite callSite, CSObj recv, JMethod callee) {
         // TODO - finish me
-        return null;
+//        List<Obj> elements = new ArrayList<>();
+//        Context callerContext = callSite.getContext();
+        Context objContext = recv.getContext();
+        int size = objContext.getLength();
+        if (size > 0) return ListContext.make(objContext.getElementAt(size - 1), recv.getObject());
+
+        return ListContext.make(recv.getObject());
     }
 
     @Override
     public Context selectHeapContext(CSMethod method, Obj obj) {
         // TODO - finish me
-        return null;
+//        List<Obj> elements = new ArrayList<>();
+
+        Context containerContext = method.getContext();
+        int size = containerContext.getLength();
+        if (size > 0) return ListContext.make(containerContext.getElementAt(size - 1));
+
+        return getEmptyContext();
     }
 }
