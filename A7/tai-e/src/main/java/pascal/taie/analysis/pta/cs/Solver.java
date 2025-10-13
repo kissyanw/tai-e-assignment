@@ -50,17 +50,13 @@ import pascal.taie.analysis.pta.pts.PointsToSetFactory;
 import pascal.taie.config.AnalysisOptions;
 import pascal.taie.ir.exp.InvokeExp;
 import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.Copy;
-import pascal.taie.ir.stmt.Invoke;
-import pascal.taie.ir.stmt.LoadArray;
-import pascal.taie.ir.stmt.LoadField;
-import pascal.taie.ir.stmt.New;
-import pascal.taie.ir.stmt.StmtVisitor;
-import pascal.taie.ir.stmt.StoreArray;
-import pascal.taie.ir.stmt.StoreField;
+import pascal.taie.ir.stmt.*;
 import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
+import polyglot.ast.Assign;
+
+import java.util.List;
 
 class Solver {
 
@@ -112,6 +108,12 @@ class Solver {
      */
     private void addReachable(CSMethod csMethod) {
         // TODO - finish me
+        if (callGraph.addReachableMethod(csMethod)) {
+            StmtProcessor stmtProcessor = new StmtProcessor(csMethod);
+            for (Stmt stmt : csMethod.getMethod().getIR().getStmts()) {
+                stmt.accept(stmtProcessor);
+            }
+        }
     }
 
     /**
@@ -127,6 +129,89 @@ class Solver {
             this.csMethod = csMethod;
             this.context = csMethod.getContext();
         }
+
+        @Override
+        public Void visit(New stmt) {
+            Obj obj = heapModel.getObj(stmt);
+            CSObj csObj = csManager.getCSObj(context, obj);
+            Var lhs = stmt.getLValue();
+            CSVar csVar = csManager.getCSVar(context, lhs);
+
+            workList.addEntry(csVar, PointsToSetFactory.make(csObj));
+
+            return null;
+        }
+
+        @Override
+        public Void visit(Copy stmt) {
+            CSVar src = csManager.getCSVar(context, stmt.getRValue());
+            CSVar dest = csManager.getCSVar(context, stmt.getLValue());
+
+            addPFGEdge(src, dest);
+
+            return null;
+        }
+
+        @Override
+        public Void visit(LoadField stmt) {
+            if (stmt.isStatic()) {
+                JField jField = stmt.getFieldRef().resolve();
+                StaticField staticField = csManager.getStaticField(jField);
+                CSVar dest = csManager.getCSVar(context, stmt.getLValue());
+
+                addPFGEdge(staticField, dest);
+            }
+
+            return null;
+        }
+
+        @Override
+        public Void visit(StoreField stmt) {
+            if (stmt.isStatic()) {
+                StaticField dest = csManager.getStaticField(stmt.getFieldRef().resolve());
+                CSVar src = csManager.getCSVar(context, stmt.getRValue());
+
+                addPFGEdge(src, dest);
+            }
+
+            return null;
+        }
+
+        @Override
+        public Void visit(Invoke stmt) {
+            if (stmt.isStatic()) {
+                JMethod callee = stmt.getMethodRef().resolve();
+                CSCallSite csCallSite = csManager.getCSCallSite(context, stmt);
+                Context calleeContext = contextSelector.selectContext(csCallSite, callee);
+                CSMethod csCallee = csManager.getCSMethod(calleeContext, callee);
+
+                if (callGraph.addEdge(new Edge<>(CallKind.STATIC, csCallSite, csCallee))) {
+                    addReachable(csCallee);
+                    List<Var> actual_params = stmt.getInvokeExp().getArgs();
+                    List<Var> formal_params = callee.getIR().getParams();
+
+                    for (int i = 0; i < actual_params.size(); i++) {
+                        CSVar cs_actual_params = csManager.getCSVar(context, actual_params.get(i));
+                        CSVar cs_formal_params = csManager.getCSVar(calleeContext, formal_params.get(i));
+                        addPFGEdge(cs_actual_params, cs_formal_params);
+                    }
+
+                    List<Var> retVars = callee.getIR().getReturnVars();
+                    Var result = stmt.getResult();
+                    if (result != null) {
+                        CSVar cs_result = csManager.getCSVar(context, result);
+                        for (Var retVar : retVars) {
+                            CSVar cs_retVar = csManager.getCSVar(calleeContext, retVar);
+                            addPFGEdge(cs_retVar, cs_result);
+                        }
+                    }
+                }
+
+            }
+
+            return null;
+        }
+
 
         // TODO - if you choose to implement addReachable()
         //  via visitor pattern, then finish me
