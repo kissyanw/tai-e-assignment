@@ -40,6 +40,8 @@ import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.language.classes.JMethod;
 
+import java.util.List;
+
 /**
  * Implementation of interprocedural constant propagation for int values.
  */
@@ -86,36 +88,61 @@ public class InterConstantPropagation extends
     @Override
     protected boolean transferCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
+        // nothing happens here
         return false;
     }
 
     @Override
     protected boolean transferNonCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        return false;
+        return cp.transferNode(stmt, in, out);
     }
 
     @Override
     protected CPFact transferNormalEdge(NormalEdge<Stmt> edge, CPFact out) {
         // TODO - finish me
-        return null;
+        //nothing happens here
+        return out;
     }
 
     @Override
     protected CPFact transferCallToReturnEdge(CallToReturnEdge<Stmt> edge, CPFact out) {
         // TODO - finish me
-        return null;
+        Stmt callSite = edge.getSource();
+        CPFact fact = out.copy();
+        if (callSite instanceof Invoke invoke) {
+            Var result = invoke.getResult();
+            if (result != null) fact.remove(result);
+        }
+
+        return fact;
     }
 
     @Override
     protected CPFact transferCallEdge(CallEdge<Stmt> edge, CPFact callSiteOut) {
         // TODO - finish me
-        return null;
+        Stmt callSite = edge.getSource();
+        CPFact fact = callSiteOut.copy();
+        JMethod callee = edge.getCallee();
+
+        if (callSite instanceof Invoke invoke) {
+            List<Var> actual_params = invoke.getInvokeExp().getArgs();
+            List<Var> formal_params = callee.getIR().getParams();
+            for (int i = 0; i < actual_params.size(); i++) {
+                Var actual_param = actual_params.get(i);
+                Var formal_param = formal_params.get(i);
+                fact.update(formal_param, callSiteOut.get(actual_param));
+            }
+        }
+
+        return fact;
     }
 
     @Override
     protected CPFact transferReturnEdge(ReturnEdge<Stmt> edge, CPFact returnOut) {
         // TODO - finish me
+        Stmt callSite = edge.getCallSite();
+
         return null;
     }
 }

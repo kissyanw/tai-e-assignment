@@ -88,6 +88,7 @@ public class ConstantPropagation extends
         else return Value.getNAC();
     }
 
+    //not take callnode into consideration
     @Override
     public boolean transferNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
@@ -104,9 +105,6 @@ public class ConstantPropagation extends
                     else return false; //handle non-int-lval as no change
                 }
                 else return false; //handle store... as no change
-            }
-            else if (definitionStmt instanceof Invoke invokeStmt) {
-                return false;// handle invoke as no change
             }
             else {
                 return false; //handle other definition-stmt as no change
