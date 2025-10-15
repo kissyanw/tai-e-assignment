@@ -22,9 +22,11 @@
 
 package pascal.taie.analysis.dataflow.inter;
 
+import com.google.common.collect.Multimap;
 import pascal.taie.World;
 import pascal.taie.analysis.dataflow.analysis.constprop.CPFact;
 import pascal.taie.analysis.dataflow.analysis.constprop.ConstantPropagation;
+import pascal.taie.analysis.dataflow.analysis.constprop.Value;
 import pascal.taie.analysis.graph.cfg.CFG;
 import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.icfg.CallEdge;
@@ -32,15 +34,26 @@ import pascal.taie.analysis.graph.icfg.CallToReturnEdge;
 import pascal.taie.analysis.graph.icfg.NormalEdge;
 import pascal.taie.analysis.graph.icfg.ReturnEdge;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
+import pascal.taie.analysis.pta.core.cs.element.ArrayIndex;
+import pascal.taie.analysis.pta.core.cs.element.InstanceField;
+import pascal.taie.analysis.pta.core.cs.element.Pointer;
+import pascal.taie.analysis.pta.core.cs.element.StaticField;
+import pascal.taie.analysis.pta.core.heap.Obj;
+import pascal.taie.analysis.pta.pts.PointsToSet;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
+import pascal.taie.ir.exp.FieldAccess;
+import pascal.taie.ir.exp.InstanceFieldAccess;
 import pascal.taie.ir.exp.InvokeExp;
 import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.Invoke;
-import pascal.taie.ir.stmt.Stmt;
+import pascal.taie.ir.stmt.*;
+import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.Callable;
 
 /**
  * Implementation of interprocedural constant propagation for int values.
@@ -52,6 +65,14 @@ public class InterConstantPropagation extends
 
     private final ConstantPropagation cp;
 
+    private Multimap<Var, Var> aliasVarMap;
+
+    private Multimap<LoadField, StoreField> aliasStaticFieldMap;
+
+    private Multimap<LoadField, StoreField> aliasInstanceFieldMap;
+
+    private Multimap<LoadArray, StoreArray> aliasArrayIndexMap;
+
     public InterConstantPropagation(AnalysisConfig config) {
         super(config);
         cp = new ConstantPropagation(new AnalysisConfig(ConstantPropagation.ID));
@@ -61,7 +82,95 @@ public class InterConstantPropagation extends
     protected void initialize() {
         String ptaId = getOptions().getString("pta");
         PointerAnalysisResult pta = World.get().getResult(ptaId);
+        Set<Stmt> stmts = icfg.getNodes();
+        // build alias var map
+        Collection<Var> vars = pta.getVars();
+        for (Var var : vars) {
+            Set<Obj> pts = pta.getPointsToSet(var);
+            for (Var other : vars) {
+                if (other.equals(var)) continue;
+                else {
+                    Set<Obj> otherPts = pta.getPointsToSet(other);
+                    for (Obj obj : otherPts) {
+                        if (pts.contains(obj)) {
+                            aliasVarMap.put(var, other);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // You can do initialization work here
+        Set<LoadField> StaticLoadFieldStmts = stmts.stream()
+                .filter(s -> s instanceof LoadField && ((LoadField) s).isStatic())
+                .map(s -> (LoadField) s)
+                .collect(java.util.stream.Collectors.toSet());
+
+        Set<StoreField> StaticStoreFieldStmts = stmts.stream()
+                .filter(s -> s instanceof StoreField && ((StoreField) s).isStatic())
+                .map(s -> (StoreField) s)
+                .collect(java.util.stream.Collectors.toSet());
+
+        Set<LoadField> InstanceLoadFieldStmts = stmts.stream()
+                .filter(s -> s instanceof LoadField && !((LoadField) s).isStatic())
+                .map(s -> (LoadField) s)
+                .collect(java.util.stream.Collectors.toSet());
+
+        Set<StoreField> InstanceStoreFieldStmts = stmts.stream()
+                .filter(s -> s instanceof StoreField && !((StoreField) s).isStatic())
+                .map(s -> (StoreField) s)
+                .collect(java.util.stream.Collectors.toSet());
+
+        Set<LoadArray> LoadArrayStmts = stmts.stream()
+                .filter(s -> s instanceof LoadArray)
+                .map(s -> (LoadArray) s)
+                .collect(java.util.stream.Collectors.toSet());
+
+        Set<StoreArray> StoreArrayStmts = stmts.stream()
+                .filter(s -> s instanceof StoreArray)
+                .map(s -> (StoreArray) s)
+                .collect(java.util.stream.Collectors.toSet());
+
+        //build alias static field stmt map
+        for (LoadField staticLoadFieldStmt : StaticLoadFieldStmts) {
+            JField loadField = staticLoadFieldStmt.getFieldRef().resolve();
+            for (StoreField staticStoreFieldStmt : StaticStoreFieldStmts) {
+                JField storeField = staticStoreFieldStmt.getFieldRef().resolve();
+                // JField在程序中是唯一的？
+                if (loadField.equals(storeField)) {
+                    aliasStaticFieldMap.put(staticLoadFieldStmt, staticStoreFieldStmt);
+                }
+            }
+        }
+
+        //build alias instance field stmt map
+        for (LoadField instanceLoadFieldStmt : InstanceLoadFieldStmts) {
+            JField loadField = instanceLoadFieldStmt.getFieldRef().resolve();
+            InstanceFieldAccess loadFieldAccess = (InstanceFieldAccess) instanceLoadFieldStmt.getFieldAccess();
+            Var loadBase = loadFieldAccess.getBase();
+
+            for (StoreField instanceStoreFieldStmt : InstanceStoreFieldStmts) {
+                JField storeField = instanceStoreFieldStmt.getFieldRef().resolve();
+                Var storeBase = ((InstanceFieldAccess) instanceStoreFieldStmt.getFieldAccess()).getBase();
+                // JField在程序中是唯一的？
+                if (aliasVarMap.get(loadBase).contains(storeBase) && loadField.equals(storeField)) {
+                    aliasInstanceFieldMap.put(instanceLoadFieldStmt, instanceStoreFieldStmt);
+                }
+            }
+        }
+
+        //build alias array index stmt map
+        for (LoadArray loadArrayStmt : LoadArrayStmts) {
+            Var loadBase = loadArrayStmt.getArrayAccess().getBase();
+            for (StoreArray storeArrayStmt : StoreArrayStmts) {
+                Var storeBase = storeArrayStmt.getArrayAccess().getBase();
+                if (aliasVarMap.get(loadBase).contains(storeBase)) {
+                    aliasArrayIndexMap.put(loadArrayStmt, storeArrayStmt);
+                }
+            }
+        }
+
     }
 
     @Override
@@ -95,14 +204,97 @@ public class InterConstantPropagation extends
     @Override
     protected boolean transferNonCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        return cp.transferNode(stmt, in, out);
+        boolean changed = cp.transferNode(stmt, in, out);
+
+        //alias-aware transfer
+        if (stmt instanceof LoadField loadField) {
+            if (loadField.isStatic()) {
+                Var loadVar = loadField.getLValue();
+                Value initialValue = in.get(loadVar);
+                Value newValue = Value.getUndef();
+                Collection<StoreField> aliasStoreFieldStmts = aliasStaticFieldMap.get(loadField);
+                if (aliasStoreFieldStmts.isEmpty()) return changed;
+                else {
+                    for (StoreField aliasStoreFieldStmt : aliasStoreFieldStmts) {
+                        Var storeVar = aliasStoreFieldStmt.getRValue();
+                        Value storeValue = in.get(storeVar);
+                        newValue = cp.meetValue(storeValue, newValue);
+                    }
+                    if (!newValue.equals(initialValue)) changed = true;
+                    out.update(loadVar, newValue);
+                }
+
+            }
+            else {
+                Var loadVar = loadField.getLValue();
+                Value initialValue = in.get(loadVar);
+                Value newValue = Value.getUndef();
+                Collection<StoreField> aliasStoreFieldStmts = aliasInstanceFieldMap.get(loadField);
+                if (aliasStoreFieldStmts.isEmpty()) return changed;
+                else {
+                    for (StoreField aliasStoreFieldStmt : aliasStoreFieldStmts) {
+                        Var storeVar = aliasStoreFieldStmt.getRValue();
+                        Value storeValue = in.get(storeVar);
+                        newValue = cp.meetValue(storeValue, initialValue);
+                    }
+                    if (!newValue.equals(initialValue)) changed = true;
+                    out.update(loadVar, newValue);
+                }
+            }
+            return changed;
+        }
+        else if (stmt instanceof LoadArray loadArray) {
+            Var loadVar = loadArray.getLValue();
+            Value initialValue = in.get(loadVar);
+            Value newValue = Value.getUndef();
+            Collection<StoreArray> aliasStoreArrayStmts = aliasArrayIndexMap.get(loadArray);
+            Collection<StoreArray> aliasStoreArrayStmtsFiltered = new java.util.HashSet<>();
+            //refine alias arrayIndexMap
+            Var index = loadArray.getArrayAccess().getIndex();
+            Value indexValue = in.get(index);
+            if (indexValue.isUndef()) return changed;
+            else if (indexValue.isConstant()) {
+                for (StoreArray aliasStoreArrayStmt : aliasStoreArrayStmts) {
+                    Var storeIndex = aliasStoreArrayStmt.getArrayAccess().getIndex();
+                    Value storeIndexValue = in.get(storeIndex);
+                    if (storeIndexValue.isUndef()) continue;
+                    else if (storeIndexValue.isConstant() && storeIndexValue.equals(indexValue)) {
+                        aliasStoreArrayStmtsFiltered.add(aliasStoreArrayStmt);
+                    }
+                    else if (storeIndexValue.isNAC()) {
+                        aliasStoreArrayStmtsFiltered.add(aliasStoreArrayStmt);
+                    }
+                }
+            }
+            else if (indexValue.isNAC()) {
+                for (StoreArray aliasStoreArrayStmt : aliasStoreArrayStmts ) {
+                    Var storeIndex = aliasStoreArrayStmt.getArrayAccess().getIndex();
+                    Value storeIndexValue = in.get(storeIndex);
+                    if (storeIndexValue.isUndef()) continue;
+                    else aliasStoreArrayStmtsFiltered.add(aliasStoreArrayStmt);
+                }
+            }
+
+            if (aliasStoreArrayStmtsFiltered.isEmpty()) return changed;
+            else {
+                for (StoreArray aliasStoreArrayStmt : aliasStoreArrayStmtsFiltered) {
+                    Var storeVar = aliasStoreArrayStmt.getRValue();
+                    Value storeValue = in.get(storeVar);
+                    newValue = cp.meetValue(storeValue, initialValue);
+                }
+                if (!newValue.equals(initialValue)) changed = true;
+                out.update(loadVar, newValue);
+            }
+            return changed;
+        }
+        else return changed;
     }
 
     @Override
     protected CPFact transferNormalEdge(NormalEdge<Stmt> edge, CPFact out) {
         // TODO - finish me
         //nothing happens here
-        return out;
+        return out.copy();
     }
 
     @Override
@@ -131,6 +323,7 @@ public class InterConstantPropagation extends
             for (int i = 0; i < actual_params.size(); i++) {
                 Var actual_param = actual_params.get(i);
                 Var formal_param = formal_params.get(i);
+                fact.remove(actual_param);
                 fact.update(formal_param, callSiteOut.get(actual_param));
             }
         }
@@ -142,7 +335,21 @@ public class InterConstantPropagation extends
     protected CPFact transferReturnEdge(ReturnEdge<Stmt> edge, CPFact returnOut) {
         // TODO - finish me
         Stmt callSite = edge.getCallSite();
+        CPFact fact = returnOut.copy();
+        if (callSite instanceof Invoke invoke) {
+            Var result = invoke.getResult();
+            Collection<Var> returnVars = edge.getReturnVars();
+            Value retValue = Value.getUndef();
+            if ( result != null) {
+                for (Var var : returnVars) {
+                    Value value = returnOut.get(var);
+                    retValue = cp.meetValue(value, retValue);
+                }
+                fact.update(result, retValue);
+            }
 
-        return null;
+        }
+
+        return fact;
     }
 }
