@@ -23,10 +23,13 @@
 package pascal.taie.analysis.dataflow.inter;
 
 import com.google.common.collect.Multimap;
+import jas.CP;
+import org.checkerframework.checker.units.qual.C;
 import pascal.taie.World;
 import pascal.taie.analysis.dataflow.analysis.constprop.CPFact;
 import pascal.taie.analysis.dataflow.analysis.constprop.ConstantPropagation;
 import pascal.taie.analysis.dataflow.analysis.constprop.Value;
+import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
 import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.icfg.CallEdge;
@@ -34,10 +37,7 @@ import pascal.taie.analysis.graph.icfg.CallToReturnEdge;
 import pascal.taie.analysis.graph.icfg.NormalEdge;
 import pascal.taie.analysis.graph.icfg.ReturnEdge;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
-import pascal.taie.analysis.pta.core.cs.element.ArrayIndex;
-import pascal.taie.analysis.pta.core.cs.element.InstanceField;
-import pascal.taie.analysis.pta.core.cs.element.Pointer;
-import pascal.taie.analysis.pta.core.cs.element.StaticField;
+import pascal.taie.util.collection.MultiMap;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.pts.PointsToSet;
 import pascal.taie.config.AnalysisConfig;
@@ -49,6 +49,8 @@ import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.*;
 import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
+import pascal.taie.util.collection.Maps;
+import polyglot.visit.DataFlow;
 
 import java.util.Collection;
 import java.util.List;
@@ -65,13 +67,14 @@ public class InterConstantPropagation extends
 
     private final ConstantPropagation cp;
 
-    private Multimap<Var, Var> aliasVarMap;
+    private final MultiMap<Var, Var> aliasVarMap = Maps.newMultiMap();
 
-    private Multimap<LoadField, StoreField> aliasStaticFieldMap;
+    private final MultiMap<LoadField, StoreField> aliasStaticFieldMap = Maps.newMultiMap();
 
-    private Multimap<LoadField, StoreField> aliasInstanceFieldMap;
+    private final MultiMap<LoadField, StoreField> aliasInstanceFieldMap = Maps.newMultiMap();
 
-    private Multimap<LoadArray, StoreArray> aliasArrayIndexMap;
+    private final MultiMap<LoadArray, StoreArray> aliasArrayIndexMap = Maps.newMultiMap();
+
 
     public InterConstantPropagation(AnalysisConfig config) {
         super(config);
@@ -88,14 +91,12 @@ public class InterConstantPropagation extends
         for (Var var : vars) {
             Set<Obj> pts = pta.getPointsToSet(var);
             for (Var other : vars) {
-                if (other.equals(var)) continue;
-                else {
-                    Set<Obj> otherPts = pta.getPointsToSet(other);
-                    for (Obj obj : otherPts) {
-                        if (pts.contains(obj)) {
-                            aliasVarMap.put(var, other);
-                            break;
-                        }
+                //应该和自身建立互为别名的关系
+                Set<Obj> otherPts = pta.getPointsToSet(other);
+                for (Obj obj : otherPts) {
+                    if (pts.contains(obj)) {
+                        aliasVarMap.put(var, other);
+                        break;
                     }
                 }
             }
@@ -169,6 +170,7 @@ public class InterConstantPropagation extends
                     aliasArrayIndexMap.put(loadArrayStmt, storeArrayStmt);
                 }
             }
+            int x = 1;
         }
 
     }
@@ -197,8 +199,8 @@ public class InterConstantPropagation extends
     @Override
     protected boolean transferCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        // nothing happens here
-        return false;
+        // nothing happens here 恒等意味着out与本轮的In相同 但是不意味着out与上一轮out相同
+        return out.copyFrom(in);
     }
 
     @Override
@@ -256,7 +258,10 @@ public class InterConstantPropagation extends
             else if (indexValue.isConstant()) {
                 for (StoreArray aliasStoreArrayStmt : aliasStoreArrayStmts) {
                     Var storeIndex = aliasStoreArrayStmt.getArrayAccess().getIndex();
-                    Value storeIndexValue = in.get(storeIndex);
+                    //判断storeIndex的值 应该参考storestmt的上下文 而不是loadstmt的上下文
+                    //todo
+                    CPFact storeFact = solver.getInFact(aliasStoreArrayStmt);
+                    Value storeIndexValue = storeFact.get(storeIndex);
                     if (storeIndexValue.isUndef()) continue;
                     else if (storeIndexValue.isConstant() && storeIndexValue.equals(indexValue)) {
                         aliasStoreArrayStmtsFiltered.add(aliasStoreArrayStmt);
@@ -314,7 +319,8 @@ public class InterConstantPropagation extends
     protected CPFact transferCallEdge(CallEdge<Stmt> edge, CPFact callSiteOut) {
         // TODO - finish me
         Stmt callSite = edge.getSource();
-        CPFact fact = callSiteOut.copy();
+        CPFact fact = new CPFact();
+        //初始化calledgeout 不能copy callsiteout 因为根据实参删除会删不干净上下文信息
         JMethod callee = edge.getCallee();
 
         if (callSite instanceof Invoke invoke) {
@@ -323,7 +329,6 @@ public class InterConstantPropagation extends
             for (int i = 0; i < actual_params.size(); i++) {
                 Var actual_param = actual_params.get(i);
                 Var formal_param = formal_params.get(i);
-                fact.remove(actual_param);
                 fact.update(formal_param, callSiteOut.get(actual_param));
             }
         }
@@ -335,7 +340,8 @@ public class InterConstantPropagation extends
     protected CPFact transferReturnEdge(ReturnEdge<Stmt> edge, CPFact returnOut) {
         // TODO - finish me
         Stmt callSite = edge.getCallSite();
-        CPFact fact = returnOut.copy();
+        //returnedgeout 也要初始化为空 防止带上callee上下文信息
+        CPFact fact = new CPFact();
         if (callSite instanceof Invoke invoke) {
             Var result = invoke.getResult();
             Collection<Var> returnVars = edge.getReturnVars();
@@ -352,4 +358,5 @@ public class InterConstantPropagation extends
 
         return fact;
     }
+
 }

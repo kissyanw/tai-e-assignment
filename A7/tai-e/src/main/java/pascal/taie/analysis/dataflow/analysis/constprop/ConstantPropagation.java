@@ -58,7 +58,9 @@ public class ConstantPropagation extends
         for (Var param : cfg.getIR().getParams()) {
             if (canHoldInt(param)) fact.update(param, Value.getNAC());
         }
-        if (canHoldInt(Objects.requireNonNull(cfg.getIR().getThis()))) fact.update(cfg.getIR().getThis(), Value.getNAC());
+        if (cfg.getIR().getThis() != null) {
+            if (canHoldInt(cfg.getIR().getThis())) fact.update(cfg.getIR().getThis(), Value.getNAC());
+        }
         return fact;
     }
 
@@ -89,6 +91,7 @@ public class ConstantPropagation extends
     }
 
     //not take callnode into consideration
+    //有个思维误区 恒等变化也可能导致out 相比于oldout变化
     @Override
     public boolean transferNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
@@ -100,20 +103,12 @@ public class ConstantPropagation extends
                 if (l instanceof Var lvar) {
                     if (canHoldInt(lvar)) {
                         newOut.update(lvar, evaluate(r, in));
-                        return out.copyFrom(newOut);
                     }
-                    else return false; //handle non-int-lval as no change
                 }
-                else return false; //handle store... as no change
             }
-            else {
-                return false; //handle other definition-stmt as no change
-            }
-        }
-        else {
-            return false; //handle non-definition-stmt as no change
         }
 
+        return out.copyFrom(newOut);
     }
 
     /**
