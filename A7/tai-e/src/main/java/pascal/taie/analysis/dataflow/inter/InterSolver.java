@@ -91,6 +91,8 @@ class InterSolver<Method, Node, Fact> {
                 Fact edgeOut = analysis.transferEdge(inEdge, predOut);
                 analysis.meetInto(edgeOut, in);
             }
+            //问题出在worklist遍历到Load语句的时候 部分store语句的上下文还没有更新 因此不只是get对应的result
+            //处理store语句时 把相关联的load语句添加到worklist中 保证load语句的结果考虑到了最新的store更新
             result.setInFact(node, in);
             if (analysis.transferNode(node, in, result.getOutFact(node))) {
                 workList.addAll(icfg.getSuccsOf(node));
@@ -98,8 +100,12 @@ class InterSolver<Method, Node, Fact> {
         }
     }
 
-    Fact getInFact(Node node) {
+    public Fact getInFact(Node node) {
         return result.getInFact(node);
+    }
+
+    public void add(Node node) {
+        workList.add(node);
     }
 
 }

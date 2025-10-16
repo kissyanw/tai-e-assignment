@@ -37,20 +37,18 @@ import pascal.taie.analysis.graph.icfg.CallToReturnEdge;
 import pascal.taie.analysis.graph.icfg.NormalEdge;
 import pascal.taie.analysis.graph.icfg.ReturnEdge;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
+import pascal.taie.ir.exp.*;
 import pascal.taie.util.collection.MultiMap;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.pts.PointsToSet;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.InstanceFieldAccess;
-import pascal.taie.ir.exp.InvokeExp;
-import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.*;
 import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.util.collection.Maps;
 import polyglot.visit.DataFlow;
+import soot.jimple.spark.geom.geomPA.IWorklist;
 
 import java.util.Collection;
 import java.util.List;
@@ -74,6 +72,8 @@ public class InterConstantPropagation extends
     private final MultiMap<LoadField, StoreField> aliasInstanceFieldMap = Maps.newMultiMap();
 
     private final MultiMap<LoadArray, StoreArray> aliasArrayIndexMap = Maps.newMultiMap();
+
+    private final MultiMap<LoadArray, StoreArray> filteredAliasArrayIndexMap = Maps.newMultiMap();
 
 
     public InterConstantPropagation(AnalysisConfig config) {
@@ -134,6 +134,7 @@ public class InterConstantPropagation extends
                 .collect(java.util.stream.Collectors.toSet());
 
         //build alias static field stmt map
+        //其实不需要从整个icfg中获取stmt的集合 可以通过别名变量来匹配
         for (LoadField staticLoadFieldStmt : StaticLoadFieldStmts) {
             JField loadField = staticLoadFieldStmt.getFieldRef().resolve();
             for (StoreField staticStoreFieldStmt : StaticStoreFieldStmts) {
@@ -170,7 +171,6 @@ public class InterConstantPropagation extends
                     aliasArrayIndexMap.put(loadArrayStmt, storeArrayStmt);
                 }
             }
-            int x = 1;
         }
 
     }
@@ -206,90 +206,91 @@ public class InterConstantPropagation extends
     @Override
     protected boolean transferNonCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        boolean changed = cp.transferNode(stmt, in, out);
+        // 除了最基本的常量传播 还完成了in到Out的copy
+        boolean changed = false;
+
+        for (Var var : in.keySet()) {
+            changed |= out.update(var, in.get(var));
+        }
 
         //alias-aware transfer
         if (stmt instanceof LoadField loadField) {
-            if (loadField.isStatic()) {
-                Var loadVar = loadField.getLValue();
-                Value initialValue = in.get(loadVar);
-                Value newValue = Value.getUndef();
-                Collection<StoreField> aliasStoreFieldStmts = aliasStaticFieldMap.get(loadField);
-                if (aliasStoreFieldStmts.isEmpty()) return changed;
-                else {
-                    for (StoreField aliasStoreFieldStmt : aliasStoreFieldStmts) {
-                        Var storeVar = aliasStoreFieldStmt.getRValue();
-                        Value storeValue = in.get(storeVar);
-                        newValue = cp.meetValue(storeValue, newValue);
-                    }
-                    if (!newValue.equals(initialValue)) changed = true;
-                    out.update(loadVar, newValue);
+//            if (ConstantPropagation.canHoldInt(loadField.getLValue())) {
+                if (loadField.isStatic()) {
+                    changed |= transferLoadField(loadField, in, out, aliasStaticFieldMap);
                 }
-
-            }
-            else {
-                Var loadVar = loadField.getLValue();
-                Value initialValue = in.get(loadVar);
-                Value newValue = Value.getUndef();
-                Collection<StoreField> aliasStoreFieldStmts = aliasInstanceFieldMap.get(loadField);
-                if (aliasStoreFieldStmts.isEmpty()) return changed;
                 else {
-                    for (StoreField aliasStoreFieldStmt : aliasStoreFieldStmts) {
-                        Var storeVar = aliasStoreFieldStmt.getRValue();
-                        Value storeValue = in.get(storeVar);
-                        newValue = cp.meetValue(storeValue, initialValue);
-                    }
-                    if (!newValue.equals(initialValue)) changed = true;
-                    out.update(loadVar, newValue);
+                    changed |= transferLoadField(loadField, in, out, aliasInstanceFieldMap);
                 }
-            }
+//            }
             return changed;
         }
         else if (stmt instanceof LoadArray loadArray) {
             Var loadVar = loadArray.getLValue();
-            Value initialValue = in.get(loadVar);
-            Value newValue = Value.getUndef();
-            Collection<StoreArray> aliasStoreArrayStmts = aliasArrayIndexMap.get(loadArray);
-            Collection<StoreArray> aliasStoreArrayStmtsFiltered = new java.util.HashSet<>();
-            //refine alias arrayIndexMap
-            Var index = loadArray.getArrayAccess().getIndex();
-            Value indexValue = in.get(index);
-            if (indexValue.isUndef()) return changed;
-            else if (indexValue.isConstant()) {
-                for (StoreArray aliasStoreArrayStmt : aliasStoreArrayStmts) {
-                    Var storeIndex = aliasStoreArrayStmt.getArrayAccess().getIndex();
-                    //判断storeIndex的值 应该参考storestmt的上下文 而不是loadstmt的上下文
-                    //todo
-                    CPFact storeFact = solver.getInFact(aliasStoreArrayStmt);
-                    Value storeIndexValue = storeFact.get(storeIndex);
-                    if (storeIndexValue.isUndef()) continue;
-                    else if (storeIndexValue.isConstant() && storeIndexValue.equals(indexValue)) {
-                        aliasStoreArrayStmtsFiltered.add(aliasStoreArrayStmt);
+
+//            if (ConstantPropagation.canHoldInt(loadVar)) {
+                Value newValue = Value.getUndef();
+
+                //refine alias arrayIndexMap
+                filterAliasArray(loadArray, aliasArrayIndexMap, filteredAliasArrayIndexMap, in);
+
+                if (filteredAliasArrayIndexMap.isEmpty()) return changed;
+                else {
+                    for (StoreArray aliasStoreArrayStmt : filteredAliasArrayIndexMap.get(loadArray)) {
+                        Var storeVar = aliasStoreArrayStmt.getRValue();
+                        if (ConstantPropagation.canHoldInt(storeVar)) {
+                            Value storeValue = solver.getInFact(aliasStoreArrayStmt).get(storeVar);
+                            newValue = cp.meetValue(storeValue, newValue);
+                        }
                     }
-                    else if (storeIndexValue.isNAC()) {
-                        aliasStoreArrayStmtsFiltered.add(aliasStoreArrayStmt);
+                    changed |= out.update(loadVar, newValue);
+                    return changed;
+                }
+//            }
+
+//            return changed;
+        }
+        else if(stmt instanceof StoreField storeField) {
+            if (ConstantPropagation.canHoldInt(storeField.getRValue())) {
+                if (storeField.isStatic()) {
+                    for (LoadField loadField : aliasStaticFieldMap.keySet()) {
+                        if (aliasStaticFieldMap.get(loadField).contains(storeField)) {
+                            solver.add(loadField);
+                        }
+                    }
+                }
+
+                else {
+                    for (LoadField loadField : aliasInstanceFieldMap.keySet()) {
+                        if (aliasInstanceFieldMap.get(loadField).contains(storeField)) {
+                            solver.add(loadField);
+                        }
                     }
                 }
             }
-            else if (indexValue.isNAC()) {
-                for (StoreArray aliasStoreArrayStmt : aliasStoreArrayStmts ) {
-                    Var storeIndex = aliasStoreArrayStmt.getArrayAccess().getIndex();
-                    Value storeIndexValue = in.get(storeIndex);
-                    if (storeIndexValue.isUndef()) continue;
-                    else aliasStoreArrayStmtsFiltered.add(aliasStoreArrayStmt);
+            return changed;
+        }
+        else if (stmt instanceof StoreArray storeArray) {
+            if (ConstantPropagation.canHoldInt(storeArray.getRValue())) {
+                for (LoadArray loadArray : aliasArrayIndexMap.keySet()) {
+                    if (aliasArrayIndexMap.get(loadArray).contains(storeArray)) {
+                        solver.add(loadArray);
+                    }
+                }
+
+            }
+            return changed;
+        }
+        else if (stmt instanceof DefinitionStmt<?,?> definitionStmt) {
+            //这样避免了部分var可能被赋值为nac的情况
+            LValue lValue = definitionStmt.getLValue();
+            if (lValue instanceof Var var) {
+                if (ConstantPropagation.canHoldInt(var)) {
+                    Value value = ConstantPropagation.evaluate(definitionStmt.getRValue(), in);
+                    changed |= out.update(var, value);
                 }
             }
 
-            if (aliasStoreArrayStmtsFiltered.isEmpty()) return changed;
-            else {
-                for (StoreArray aliasStoreArrayStmt : aliasStoreArrayStmtsFiltered) {
-                    Var storeVar = aliasStoreArrayStmt.getRValue();
-                    Value storeValue = in.get(storeVar);
-                    newValue = cp.meetValue(storeValue, initialValue);
-                }
-                if (!newValue.equals(initialValue)) changed = true;
-                out.update(loadVar, newValue);
-            }
             return changed;
         }
         else return changed;
@@ -357,6 +358,44 @@ public class InterConstantPropagation extends
         }
 
         return fact;
+    }
+
+    protected boolean transferLoadField(LoadField loadField, CPFact in, CPFact out, MultiMap<LoadField, StoreField> aliasStmtMap) {
+        Var loadVar = loadField.getLValue();
+        Value newValue = Value.getUndef();
+        boolean changed = false;
+        Collection<StoreField> aliasStoreFieldStmts = aliasStmtMap.get(loadField);
+        if (aliasStoreFieldStmts.isEmpty()) return false;
+        else {
+            for (StoreField aliasStoreFieldStmt : aliasStoreFieldStmts) {
+                Var storeVar = aliasStoreFieldStmt.getRValue();
+                //store stmt is not int -> ignored
+                if (ConstantPropagation.canHoldInt(storeVar)) {
+                    Value storeValue = solver.getInFact(aliasStoreFieldStmt).get(storeVar);
+                    newValue = cp.meetValue(storeValue, newValue);
+                }
+            }
+            changed = out.update(loadVar, newValue);
+        }
+        return changed;
+    }
+
+    protected void filterAliasArray(LoadArray loadArray, MultiMap<LoadArray, StoreArray> aliasStmtMap, MultiMap<LoadArray, StoreArray> FilteredAliasStmtsMap, CPFact in) {
+        Collection<StoreArray> storeArrays = aliasStmtMap.get(loadArray);
+        Var loadIndex = loadArray.getArrayAccess().getIndex();
+        Value loadIndexV = in.get(loadIndex);
+
+        for (StoreArray storeArray : storeArrays) {
+            Var storeIndex = storeArray.getArrayAccess().getIndex();
+            Value storeIndexV = solver.getInFact(storeArray).get(storeIndex);
+            if (isAliasIndex(loadIndexV, storeIndexV)) FilteredAliasStmtsMap.put(loadArray, storeArray);
+        }
+    }
+
+    private boolean isAliasIndex(Value loadIndexV, Value storeIndexV) {
+        if (loadIndexV.isUndef() || storeIndexV.isUndef()) return false;
+        else if (loadIndexV.isNAC() || storeIndexV.isNAC()) return true;
+        else return loadIndexV.equals(storeIndexV);
     }
 
 }
