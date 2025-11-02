@@ -51,17 +51,12 @@ import pascal.taie.analysis.pta.pts.PointsToSetFactory;
 import pascal.taie.config.AnalysisOptions;
 import pascal.taie.ir.exp.InvokeExp;
 import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.Copy;
-import pascal.taie.ir.stmt.Invoke;
-import pascal.taie.ir.stmt.LoadArray;
-import pascal.taie.ir.stmt.LoadField;
-import pascal.taie.ir.stmt.New;
-import pascal.taie.ir.stmt.StmtVisitor;
-import pascal.taie.ir.stmt.StoreArray;
-import pascal.taie.ir.stmt.StoreField;
+import pascal.taie.ir.stmt.*;
 import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
+
+import java.util.List;
 
 public class Solver {
 
@@ -126,9 +121,15 @@ public class Solver {
 
     /**
      * Processes new reachable context-sensitive method.
+     * build static PFG edges according to its statements
      */
     private void addReachable(CSMethod csMethod) {
         // TODO - finish me
+        if (callGraph.addReachableMethod(csMethod)) {
+            StmtProcessor stmtProcessor = new StmtProcessor(csMethod);
+            // pass the class type info of stmt to visit methods through implemention visit method in each Stmt class
+            for (Stmt stmt : csMethod.getMethod().getIR()) stmt.accept(stmtProcessor);
+        }
     }
 
     /**
@@ -147,6 +148,104 @@ public class Solver {
 
         // TODO - if you choose to implement addReachable()
         //  via visitor pattern, then finish me
+        @Override
+        public Void visit(New stmt) {
+            //no effect to taint analysis
+            Obj obj = heapModel.getObj(stmt);
+            Context heapContext = contextSelector.selectHeapContext(csMethod, obj);
+            CSObj csObj = csManager.getCSObj(heapContext, obj);
+            CSVar csVar = csManager.getCSVar(context, stmt.getLValue());
+            workList.addEntry(csVar, PointsToSetFactory.make(csObj));
+
+            return null;
+        }
+
+        @Override
+        public Void visit(Copy stmt) {
+            // no need to propagate taint info specifically here, as it will be handled in the general pointer analysis propagation
+            CSVar srcVar = csManager.getCSVar(context, stmt.getRValue());
+            CSVar destVar = csManager.getCSVar(context, stmt.getLValue());
+            addPFGEdge(srcVar, destVar);
+
+            return null;
+        }
+
+        @Override
+        public Void visit(LoadField stmt) {
+            if (stmt.isStatic()) {
+                JField jField = stmt.getFieldRef().resolve();
+                //source: static field
+                StaticField staticField = csManager.getStaticField(jField);
+                CSVar destVar = csManager.getCSVar(context, stmt.getLValue());
+                addPFGEdge(staticField, destVar);
+            }
+
+            return null;
+        }
+
+        @Override
+        public Void visit(StoreField stmt) {
+            if (stmt.isStatic()) {
+                JField jField = stmt.getFieldRef().resolve();
+                CSVar srcVar = csManager.getCSVar(context, stmt.getRValue());
+                //target: static field
+                StaticField staticField = csManager.getStaticField(jField);
+                addPFGEdge(srcVar, staticField);
+            }
+
+            return null;
+        }
+
+        @Override
+        public Void visit(Invoke stmt) {
+            if (stmt.isStatic()) {
+                JMethod callee = resolveCallee(null, stmt);
+                CSCallSite csCallSite = csManager.getCSCallSite(context, stmt);
+                Context calleeContext = contextSelector.selectContext(csCallSite, callee);
+                CSMethod csCallee = csManager.getCSMethod(calleeContext, callee);
+                Type returnType = callee.getReturnType();
+
+                //theoretically, the action to add c:l -> ct:m for static method will be taken only once during the analysis
+                //so maybe no need to check the return value of addEdge here and it will always be true
+                if (callGraph.addEdge(new Edge<>(CallKind.STATIC, csCallSite, csCallee))) {
+                    //c1:l1 -> ct:m
+                    //c2:l2 -> ct:m
+                    //no need to add ct:m for twice?
+                    //of course, and i can lay this part logic into addReachable method
+//                    if (callGraph.addReachableMethod(csCallee)){
+                    addReachable(csCallee);
+//                    }
+                    List<Var> arguments = stmt.getInvokeExp().getArgs();
+                    List<Var> parameters = callee.getIR().getParams();
+                    for (int i = 0; i < arguments.size(); i++) {
+                        CSVar srcVar = csManager.getCSVar(context, arguments.get(i));
+                        CSVar destVar = csManager.getCSVar(calleeContext, parameters.get(i));
+                        addPFGEdge(srcVar, destVar);
+                    }
+
+                    if(stmt.getResult() != null){
+                        List<Var> retVars = callee.getIR().getVars();
+
+                        for (Var retVar : retVars) {
+                            CSVar srcVar = csManager.getCSVar(calleeContext, retVar);
+                            CSVar destVar = csManager.getCSVar(context, stmt.getResult());
+                            addPFGEdge(srcVar, destVar);
+                        }
+                    }
+
+                    //the static method call can be source of taint data flow
+                    if (taintAnalysis.isSource(callee, returnType)) {
+                        CSObj taintData  = taintAnalysis.makeTaintObj(stmt, returnType);
+                        CSVar destVar = csManager.getCSVar(context, stmt.getResult());
+                        workList.addEntry(destVar, PointsToSetFactory.make(taintData));
+                    }
+                    //no need to consider taint transfer when deal with static method;
+                    //when the taint data is propagated to
+                    //todo: if i should build virtual edge(only for propagating taint data) from arg to result for taintTransfer static method?
+                }
+            }
+            return null;
+        }
     }
 
     /**
@@ -154,6 +253,12 @@ public class Solver {
      */
     private void addPFGEdge(Pointer source, Pointer target) {
         // TODO - finish me
+        if (pointerFlowGraph.addEdge(source, target)) {
+            PointsToSet pointsToSet = source.getPointsToSet();
+            if (!pointsToSet.isEmpty()) {
+                workList.addEntry(target, pointsToSet);
+            }
+        }
     }
 
     /**
@@ -161,6 +266,22 @@ public class Solver {
      */
     private void analyze() {
         // TODO - finish me
+        while (!workList.isEmpty()) {
+            WorkList.Entry entry = workList.pollEntry();
+            Pointer pointer = entry.pointer();
+            PointsToSet pointsToSet = entry.pointsToSet();
+            PointsToSet diffSet = propagate(pointer, pointsToSet);
+
+            if (!diffSet.isEmpty() && pointer instanceof CSVar csVar) {
+                Var var = csVar.getVar();
+                List<LoadField> loadFields = var.getLoadFields();
+                List<StoreField> storeFields = var.getStoreFields();
+                List<StoreArray> storeArrays = var.getStoreArrays();
+                List<LoadArray> loadArrays = var.getLoadArrays();
+
+                
+            }
+        }
     }
 
     /**

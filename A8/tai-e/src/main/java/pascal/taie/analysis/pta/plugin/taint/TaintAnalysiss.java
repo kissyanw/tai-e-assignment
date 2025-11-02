@@ -28,7 +28,12 @@ import pascal.taie.World;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
 import pascal.taie.analysis.pta.core.cs.context.Context;
 import pascal.taie.analysis.pta.core.cs.element.CSManager;
+import pascal.taie.analysis.pta.core.cs.element.CSObj;
+import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.cs.Solver;
+import pascal.taie.ir.stmt.Invoke;
+import pascal.taie.language.classes.JMethod;
+import pascal.taie.language.type.Type;
 
 import java.util.Map;
 import java.util.Set;
@@ -73,5 +78,39 @@ public class TaintAnalysiss {
         // TODO - finish me
         // You could query pointer analysis results you need via variable result.
         return taintFlows;
+    }
+
+    public boolean isSource(JMethod jMethod, Type type) {
+        for (Source source : config.getSources()) {
+            if (source.method().equals(jMethod) && source.type().equals(type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isSink(JMethod jMethod, int index) {
+        for (Sink sink : config.getSinks()) {
+            if (sink.method().equals(jMethod) && sink.index() == index) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isTaintTransfer(JMethod method, int from, int to, Type type) {
+        for (TaintTransfer transfer : config.getTransfers()) {
+            if (transfer.method().equals(method)
+                    && transfer.from() == from
+                    && transfer.to() == to
+                    && transfer.type().equals(type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public CSObj makeTaintObj(Invoke source, Type type) {
+        return csManager.getCSObj(emptyContext, manager.makeTaint(source, type));
     }
 }

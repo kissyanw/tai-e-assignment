@@ -86,7 +86,10 @@ class TaintConfig {
     static TaintConfig readConfig(
             String path, ClassHierarchy hierarchy, TypeSystem typeSystem) {
         File file = new File(path);
+        //make mapper understand YAML format input
         ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
+        //create and register a module in mapper
+        //the mapper uses the custom deserializer to deserialize content of yaml file to TaintConfig object
         SimpleModule module = new SimpleModule();
         module.addDeserializer(TaintConfig.class,
                 new Deserializer(hierarchy, typeSystem));
@@ -158,6 +161,7 @@ class TaintConfig {
         public TaintConfig deserialize(JsonParser p, DeserializationContext ctxt)
                 throws IOException {
             ObjectCodec oc = p.getCodec();
+            //JsonNode.get() here is an arrayNode, each ObjectNode in the arrayNode represents a source/sink/transfer
             JsonNode node = oc.readTree(p);
             Set<Source> sources = deserializeSources(node.get("sources"));
             Set<Sink> sinks = deserializeSinks(node.get("sinks"));
