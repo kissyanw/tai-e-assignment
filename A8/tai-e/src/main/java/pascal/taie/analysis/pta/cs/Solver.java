@@ -44,6 +44,7 @@ import pascal.taie.analysis.pta.core.cs.element.Pointer;
 import pascal.taie.analysis.pta.core.cs.element.StaticField;
 import pascal.taie.analysis.pta.core.cs.selector.ContextSelector;
 import pascal.taie.analysis.pta.core.heap.HeapModel;
+import pascal.taie.analysis.pta.core.heap.MockObj;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.plugin.taint.TaintAnalysiss;
 import pascal.taie.analysis.pta.pts.PointsToSet;
@@ -217,11 +218,8 @@ public class Solver {
 //                    }
                     AddEdgeBetweenCallSiteAndCallee(csCallSite, csCallee);
                     //the static method call can be source of taint data flow
-                    if (taintAnalysis.isSource(callee, returnType)) {
-                        CSObj taintData  = taintAnalysis.makeTaintObj(stmt, returnType);
-                        CSVar destVar = csManager.getCSVar(context, stmt.getResult());
-                        workList.addEntry(destVar, PointsToSetFactory.make(taintData));
-                    }
+                    //and only consider to create source for the first time the edge is added into call graph
+                    createSource(csCallSite, callee, returnType);
                     //no need to consider taint transfer when deal with static method;
                     //when the taint data is propagated to
                     //todo: if i should build virtual edge(only for propagating taint data) from arg to result for taintTransfer static method?
@@ -264,24 +262,28 @@ public class Solver {
                 List<LoadArray> loadArrays = var.getLoadArrays();
 
                 for (CSObj csObj : diffSet) {
+                    //skip taint object during iterative edge creation;
+                    //taint object has nothing to do with points-to relation construction;
+                    if (csObj.getObject() instanceof MockObj mockObj && mockObj.getDescription().equals("TaintObj"))
+                        continue;
                     for (LoadField loadField : loadFields) {
                         CSVar dest = csManager.getCSVar(context, loadField.getLValue());
                         JField jField = loadField.getFieldRef().resolve();
                         InstanceField src = csManager.getInstanceField(csObj, jField);
                         addPFGEdge(src, dest);
                     }
-                    for (StoreField storeField: storeFields) {
+                    for (StoreField storeField : storeFields) {
                         CSVar src = csManager.getCSVar(context, storeField.getRValue());
                         JField jField = storeField.getFieldRef().resolve();
                         InstanceField dest = csManager.getInstanceField(csObj, jField);
                         addPFGEdge(src, dest);
                     }
-                    for (LoadArray loadArray: loadArrays) {
+                    for (LoadArray loadArray : loadArrays) {
                         CSVar dest = csManager.getCSVar(context, loadArray.getLValue());
                         ArrayIndex src = csManager.getArrayIndex(csObj);
                         addPFGEdge(src, dest);
                     }
-                    for (StoreArray storeArray: storeArrays) {
+                    for (StoreArray storeArray : storeArrays) {
                         CSVar src = csManager.getCSVar(context, storeArray.getRValue());
                         ArrayIndex dest = csManager.getArrayIndex(csObj);
                         addPFGEdge(src, dest);
@@ -341,10 +343,13 @@ public class Solver {
 
             if (callGraph.addEdge(new Edge<>(callKind, csCallSite, csCallee))) {
                 addReachable(csCallee);
+
                 CSVar calleeThis = csManager.getCSVar(calleeContext, callee.getIR().getThis());
                 workList.addEntry(calleeThis, PointsToSetFactory.make(recvObj));
 
                 AddEdgeBetweenCallSiteAndCallee(csCallSite, csCallee);
+
+                createSource(csCallSite, callee, callee.getReturnType());
             }
 
         }
@@ -390,4 +395,15 @@ public class Solver {
             }
         }
     }
+
+    private void createSource(CSCallSite csCallSite, JMethod callee, Type type) {
+        Context context = csCallSite.getContext();
+        Invoke invoke = csCallSite.getCallSite();
+        if (taintAnalysis.isSource(callee,type)) {
+            CSObj csTaintObj = taintAnalysis.makeTaintObj(invoke, type);
+            CSVar dest = csManager.getCSVar(context, invoke.getLValue());
+            workList.addEntry(dest, PointsToSetFactory.make(csTaintObj));
+        }
+    }
+
 }
