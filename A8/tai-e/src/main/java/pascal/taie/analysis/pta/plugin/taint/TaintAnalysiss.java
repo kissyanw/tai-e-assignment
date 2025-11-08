@@ -25,21 +25,24 @@ package pascal.taie.analysis.pta.plugin.taint;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import pascal.taie.World;
+import pascal.taie.analysis.graph.callgraph.CallGraph;
+import pascal.taie.analysis.graph.callgraph.Edge;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
 import pascal.taie.analysis.pta.core.cs.context.Context;
-import pascal.taie.analysis.pta.core.cs.element.CSCallSite;
-import pascal.taie.analysis.pta.core.cs.element.CSManager;
-import pascal.taie.analysis.pta.core.cs.element.CSObj;
-import pascal.taie.analysis.pta.core.cs.element.CSVar;
+import pascal.taie.analysis.pta.core.cs.element.*;
+import pascal.taie.analysis.pta.core.heap.MockObj;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.cs.Solver;
 import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
+import pascal.taie.util.collection.Maps;
+import pascal.taie.util.collection.MultiMap;
 
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
+import java.lang.invoke.CallSite;
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class TaintAnalysiss {
 
@@ -54,6 +57,8 @@ public class TaintAnalysiss {
     private final CSManager csManager;
 
     private final Context emptyContext;
+
+    private final MultiMap<Pointer, Pointer> taintTransferEdges = Maps.newMultiMap();
 
     public TaintAnalysiss(Solver solver) {
         manager = new TaintManager();
@@ -79,6 +84,29 @@ public class TaintAnalysiss {
         PointerAnalysisResult result = solver.getResult();
         // TODO - finish me
         // You could query pointer analysis results you need via variable result.
+        CallGraph<CSCallSite, CSMethod> csCallGraph = result.getCSCallGraph();
+        Stream<Edge<CSCallSite, CSMethod>> callEdges = csCallGraph.edges();
+        callEdges.forEach(edge -> {
+            CSCallSite csCallSite = edge.getCallSite();
+            CSMethod csCallee = edge.getCallee();
+
+            JMethod jMethod = csCallee.getMethod();
+            if (isSink(jMethod)) {
+                List<Integer> sinkParamIndexes = getSinkParamIndexes(jMethod);
+                for (int index : sinkParamIndexes) {
+                    CSVar sinkParam = csManager.getCSVar(csCallSite.getContext(), csCallSite.getCallSite().getInvokeExp().getArg(index));
+                    Set<CSObj> pointedObjs = result.getPointsToSet(sinkParam);
+                    for (CSObj csObj : pointedObjs) {
+                        if (csObj.getObject() instanceof MockObj mockObj && mockObj.getDescription().equals("TaintObj")) {
+                            Invoke sourceCall = (Invoke) mockObj.getAllocation();
+                            Invoke sinkCall = csCallSite.getCallSite();
+                            taintFlows.add(new TaintFlow(sourceCall, sinkCall, index));
+                        }
+                    }
+                }
+            }
+        });
+
         return taintFlows;
     }
 
@@ -91,23 +119,28 @@ public class TaintAnalysiss {
         return false;
     }
 
-    public boolean isSink(JMethod jMethod, int index) {
+    public boolean isSink(JMethod jMethod) {
         for (Sink sink : config.getSinks()) {
-            if (sink.method().equals(jMethod) && sink.index() == index) {
+            if (sink.method().equals(jMethod)) {
                 return true;
             }
         }
         return false;
     }
 
-    public boolean isTaintTransfer(JMethod method, int from, int to, Type type) {
-        for (TaintTransfer transfer : config.getTransfers()) {
-            if (transfer.method().equals(method)
-                    && transfer.from() == from
-                    && transfer.to() == to
-                    && transfer.type().equals(type)) {
-                return true;
+    public List<Integer> getSinkParamIndexes(JMethod jMethod) {
+        List<Integer> indexes = new ArrayList<>();
+        for (Sink sink : config.getSinks()) {
+            if (sink.method().equals(jMethod)) {
+                indexes.add(sink.index());
             }
+        }
+        return indexes;
+    }
+
+    public boolean isTaintTransferMethod(JMethod method) {
+        for (TaintTransfer transfer : config.getTransfers()) {
+            if (transfer.method().equals(method)) return true;
         }
         return false;
     }
@@ -116,5 +149,24 @@ public class TaintAnalysiss {
         return csManager.getCSObj(emptyContext, manager.makeTaint(source, type));
     }
 
+
+    public void addTaintTransferEdge(CSVar src, CSVar dest) {
+        taintTransferEdges.put(src, dest);
+    }
+
+    public MultiMap<Pointer, Pointer> getTaintTransferEdges() {
+        return taintTransferEdges;
+    }
+
+    public HashMap<Integer, Integer> getFromToIndexMap(JMethod callee) {
+        HashMap<Integer, Integer> fromToIndexMap = new HashMap<>();
+        for (TaintTransfer transfer : config.getTransfers()) {
+            if (transfer.method().equals(callee)) {
+                fromToIndexMap.put(transfer.from(), transfer.to());
+            }
+        }
+
+        return fromToIndexMap;
+    }
 
 }

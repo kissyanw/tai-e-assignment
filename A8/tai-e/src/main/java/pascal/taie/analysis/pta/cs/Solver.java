@@ -51,12 +51,14 @@ import pascal.taie.analysis.pta.pts.PointsToSet;
 import pascal.taie.analysis.pta.pts.PointsToSetFactory;
 import pascal.taie.config.AnalysisOptions;
 import pascal.taie.ir.exp.InvokeExp;
+import pascal.taie.ir.exp.InvokeInstanceExp;
 import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.*;
 import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
 
+import java.util.HashMap;
 import java.util.List;
 
 public class Solver {
@@ -223,6 +225,10 @@ public class Solver {
                     //no need to consider taint transfer when deal with static method;
                     //when the taint data is propagated to
                     //todo: if i should build virtual edge(only for propagating taint data) from arg to result for taintTransfer static method?
+                    if (taintAnalysis.isTaintTransferMethod(callee)) {
+                        addTaintTransferEdge(csCallSite, csCallee);
+                    }
+
                 }
             }
             return null;
@@ -302,11 +308,15 @@ public class Solver {
         // TODO - finish me
         PointsToSet pts = pointer.getPointsToSet();
         PointsToSet diffSet = PointsToSetFactory.make();
+        PointsToSet diffTaintSet = PointsToSetFactory.make();
 
         for (CSObj csObj : pointsToSet) {
             if (!pts.contains(csObj)) {
                 pts.addObject(csObj);
                 diffSet.addObject(csObj);
+                if (csObj.getObject() instanceof MockObj mockObj && mockObj.getDescription().equals("TaintObj")) {
+                    diffTaintSet.addObject(csObj);
+                }
             }
         }
 
@@ -315,6 +325,13 @@ public class Solver {
                 workList.addEntry(succ, diffSet);
             }
         }
+
+        if (!diffTaintSet.isEmpty()) {
+            for (Pointer succ : taintAnalysis.getTaintTransferEdges().get(pointer)) {
+                workList.addEntry(succ, diffTaintSet);
+            }
+        }
+
         return diffSet;
     }
 
@@ -350,6 +367,8 @@ public class Solver {
                 AddEdgeBetweenCallSiteAndCallee(csCallSite, csCallee);
 
                 createSource(csCallSite, callee, callee.getReturnType());
+
+                if (taintAnalysis.isTaintTransferMethod(callee)) addTaintTransferEdge(csCallSite, csCallee);
             }
 
         }
@@ -403,6 +422,36 @@ public class Solver {
             CSObj csTaintObj = taintAnalysis.makeTaintObj(invoke, type);
             CSVar dest = csManager.getCSVar(context, invoke.getLValue());
             workList.addEntry(dest, PointsToSetFactory.make(csTaintObj));
+        }
+    }
+
+    private void addTaintTransferEdge(CSCallSite csCallSite, CSMethod csCallee) {
+        JMethod callee = csCallee.getMethod();
+        HashMap<Integer, Integer> fromToIndexMap = taintAnalysis.getFromToIndexMap(callee);
+
+        Context callSiteContext = csCallSite.getContext();
+        for (Integer fromIndex : fromToIndexMap.keySet()) {
+            Integer toIndex = fromToIndexMap.get(fromIndex);
+            if (fromIndex == -1 && toIndex == -2) {
+                InvokeInstanceExp invokeInstance = (InvokeInstanceExp)csCallSite.getCallSite().getInvokeExp();
+                CSVar base = csManager.getCSVar(callSiteContext, invokeInstance.getBase());
+                CSVar result = csManager.getCSVar(callSiteContext, csCallSite.getCallSite().getResult());
+                taintAnalysis.addTaintTransferEdge(base, result);
+            }
+            else if (fromIndex != -1 && toIndex == -1) {
+                InvokeInstanceExp invokeInstance = (InvokeInstanceExp)csCallSite.getCallSite().getInvokeExp();
+                CSVar arg = csManager.getCSVar(callSiteContext, csCallSite.getCallSite().getInvokeExp().getArg(fromIndex));
+                CSVar base = csManager.getCSVar(callSiteContext, invokeInstance.getBase());
+                taintAnalysis.addTaintTransferEdge(arg, base);
+            }
+            else if (fromIndex != -1 && toIndex == -2) {
+                CSVar arg = csManager.getCSVar(callSiteContext, csCallSite.getCallSite().getInvokeExp().getArg(fromIndex));
+                CSVar result = csManager.getCSVar(callSiteContext, csCallSite.getCallSite().getResult());
+                taintAnalysis.addTaintTransferEdge(arg, result);
+            }
+            else {
+                System.err.println("Unexpected from/to index in taint transfer method!");
+            }
         }
     }
 
