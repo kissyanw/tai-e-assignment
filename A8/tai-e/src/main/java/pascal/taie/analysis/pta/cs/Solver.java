@@ -203,6 +203,7 @@ public class Solver {
         public Void visit(Invoke stmt) {
             if (stmt.isStatic()) {
                 JMethod callee = resolveCallee(null, stmt);
+                if (callee == null) return null;
                 CSCallSite csCallSite = csManager.getCSCallSite(context, stmt);
                 Context calleeContext = contextSelector.selectContext(csCallSite, callee);
                 CSMethod csCallee = csManager.getCSMethod(calleeContext, callee);
@@ -270,31 +271,36 @@ public class Solver {
                 for (CSObj csObj : diffSet) {
                     //skip taint object during iterative edge creation;
                     //taint object has nothing to do with points-to relation construction;
-                    if (csObj.getObject() instanceof MockObj mockObj && mockObj.getDescription().equals("TaintObj"))
-                        continue;
-                    for (LoadField loadField : loadFields) {
-                        CSVar dest = csManager.getCSVar(context, loadField.getLValue());
-                        JField jField = loadField.getFieldRef().resolve();
-                        InstanceField src = csManager.getInstanceField(csObj, jField);
-                        addPFGEdge(src, dest);
+                    if (csObj.getObject() instanceof MockObj mockObj && mockObj.getDescription().equals("TaintObj")) {
+                        //build taint transfer edges only
+                        //taint obj should also be considered when handle instance call
+                        processCall(csVar, csObj);
                     }
-                    for (StoreField storeField : storeFields) {
-                        CSVar src = csManager.getCSVar(context, storeField.getRValue());
-                        JField jField = storeField.getFieldRef().resolve();
-                        InstanceField dest = csManager.getInstanceField(csObj, jField);
-                        addPFGEdge(src, dest);
+                    else {
+                        for (LoadField loadField : loadFields) {
+                            CSVar dest = csManager.getCSVar(context, loadField.getLValue());
+                            JField jField = loadField.getFieldRef().resolve();
+                            InstanceField src = csManager.getInstanceField(csObj, jField);
+                            addPFGEdge(src, dest);
+                        }
+                        for (StoreField storeField : storeFields) {
+                            CSVar src = csManager.getCSVar(context, storeField.getRValue());
+                            JField jField = storeField.getFieldRef().resolve();
+                            InstanceField dest = csManager.getInstanceField(csObj, jField);
+                            addPFGEdge(src, dest);
+                        }
+                        for (LoadArray loadArray : loadArrays) {
+                            CSVar dest = csManager.getCSVar(context, loadArray.getLValue());
+                            ArrayIndex src = csManager.getArrayIndex(csObj);
+                            addPFGEdge(src, dest);
+                        }
+                        for (StoreArray storeArray : storeArrays) {
+                            CSVar src = csManager.getCSVar(context, storeArray.getRValue());
+                            ArrayIndex dest = csManager.getArrayIndex(csObj);
+                            addPFGEdge(src, dest);
+                        }
+                        processCall(csVar, csObj);
                     }
-                    for (LoadArray loadArray : loadArrays) {
-                        CSVar dest = csManager.getCSVar(context, loadArray.getLValue());
-                        ArrayIndex src = csManager.getArrayIndex(csObj);
-                        addPFGEdge(src, dest);
-                    }
-                    for (StoreArray storeArray : storeArrays) {
-                        CSVar src = csManager.getCSVar(context, storeArray.getRValue());
-                        ArrayIndex dest = csManager.getArrayIndex(csObj);
-                        addPFGEdge(src, dest);
-                    }
-                    processCall(csVar, csObj);
                 }
             }
         }
@@ -328,7 +334,15 @@ public class Solver {
 
         if (!diffTaintSet.isEmpty()) {
             for (Pointer succ : taintAnalysis.getTaintTransferEdges().get(pointer)) {
-                workList.addEntry(succ, diffTaintSet);
+                CSVar destVar = (CSVar) succ;
+                Type destType = destVar.getVar().getType();
+                PointsToSet typeTransferedTaintSet = PointsToSetFactory.make();
+                for (CSObj taintObj : diffTaintSet) {
+                    Invoke ObjCreateSite = (Invoke)taintObj.getObject().getAllocation();
+                    CSObj transferedTaintObj = taintAnalysis.makeTaintObj(ObjCreateSite, destType);
+                    typeTransferedTaintSet.addObject(transferedTaintObj);
+                }
+                workList.addEntry(succ, typeTransferedTaintSet);
             }
         }
 
@@ -349,6 +363,8 @@ public class Solver {
 
         for (Invoke callSite : invokes) {
             JMethod callee = resolveCallee(recvObj, callSite);
+
+            if (callee == null) continue;
             CSCallSite csCallSite = csManager.getCSCallSite(context, callSite);
             Context calleeContext = contextSelector.selectContext(csCallSite, recvObj, callee);
             CSMethod csCallee = csManager.getCSMethod(calleeContext, callee);
