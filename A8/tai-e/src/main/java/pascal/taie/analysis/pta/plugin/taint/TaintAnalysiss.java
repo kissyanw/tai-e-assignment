@@ -31,17 +31,15 @@ import pascal.taie.analysis.pta.PointerAnalysisResult;
 import pascal.taie.analysis.pta.core.cs.context.Context;
 import pascal.taie.analysis.pta.core.cs.element.*;
 import pascal.taie.analysis.pta.core.heap.MockObj;
-import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.cs.Solver;
 import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
 import pascal.taie.util.collection.Maps;
 import pascal.taie.util.collection.MultiMap;
+import pascal.taie.util.collection.TwoKeyMap;
 
-import java.lang.invoke.CallSite;
 import java.util.*;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class TaintAnalysiss {
@@ -59,6 +57,10 @@ public class TaintAnalysiss {
     private final Context emptyContext;
 
     private final MultiMap<Pointer, Pointer> taintTransferEdges = Maps.newMultiMap();
+
+    private final TwoKeyMap<Pointer, Pointer, Type> taintTransferTypes = Maps.newTwoKeyMap();
+
+    public record TransferEdge(int from, int to, Type type) {}
 
     public TaintAnalysiss(Solver solver) {
         manager = new TaintManager();
@@ -154,19 +156,27 @@ public class TaintAnalysiss {
         taintTransferEdges.put(src, dest);
     }
 
+    public void addTaintTransferType(CSVar src, CSVar dest, Type type) {
+        taintTransferTypes.put(src, dest, type);
+    }
+
     public MultiMap<Pointer, Pointer> getTaintTransferEdges() {
         return taintTransferEdges;
     }
 
-    public HashMap<Integer, Integer> getFromToIndexMap(JMethod callee) {
-        HashMap<Integer, Integer> fromToIndexMap = new HashMap<>();
+    public TwoKeyMap<Pointer, Pointer, Type> getTaintTransferTypes() {
+        return taintTransferTypes;
+    }
+
+    public List<TransferEdge> getTaintTransfersByMethod(JMethod callee) {
+        List<TransferEdge> transfers = new ArrayList<>();
         for (TaintTransfer transfer : config.getTransfers()) {
             if (transfer.method().equals(callee)) {
-                fromToIndexMap.put(transfer.from(), transfer.to());
+                TransferEdge edge = new TransferEdge(transfer.from(), transfer.to(), transfer.type());
+                transfers.add(edge);
             }
         }
-
-        return fromToIndexMap;
+        return transfers;
     }
 
 }
